@@ -2313,6 +2313,21 @@ export const hooksTrajectoryStart: MCPTool = {
 
     activeTrajectories.set(trajectoryId, trajectory);
 
+    // Persist pending trajectory to disk so it survives MCP restarts
+    const storeFn = await getRealStoreFunction();
+    if (storeFn) {
+      try {
+        await storeFn({
+          key: `trajectory-pending-${trajectoryId}`,
+          value: JSON.stringify(trajectory),
+          namespace: 'trajectories',
+          tags: [agent, 'pending', 'sona-trajectory'],
+        });
+      } catch {
+        // Best-effort persistence — trajectory still lives in-memory
+      }
+    }
+
     return {
       trajectoryId,
       task,
@@ -2580,6 +2595,7 @@ export const hooksPatternStore: MCPTool = {
 
     const success = reasoningResult?.success || storeResult.success;
     const controller = reasoningResult?.controller || (storeResult.success ? 'bridge-store' : 'none');
+    const hasEmbedding = !!storeResult.embedding || controller === 'reasoningBank' || controller === 'bridge-fallback';
 
     return {
       patternId: reasoningResult?.patternId || storeResult.id || patternId,
@@ -2587,14 +2603,18 @@ export const hooksPatternStore: MCPTool = {
       type,
       confidence,
       indexed: success,
-      hnswIndexed: success && (!!storeResult.embedding || controller === 'reasoningBank'),
+      hnswIndexed: success && hasEmbedding,
       embedding: storeResult.embedding,
       timestamp,
       controller,
-      implementation: controller === 'reasoningBank' ? 'reasoning-bank-controller' : (storeResult.success ? 'real-hnsw-indexed' : 'memory-only'),
+      implementation: (controller === 'reasoningBank' || controller === 'bridge-fallback')
+        ? 'reasoning-bank-controller'
+        : (storeResult.success ? 'real-hnsw-indexed' : 'memory-only'),
       note: controller === 'reasoningBank'
         ? 'Pattern stored via ReasoningBank controller with HNSW indexing'
-        : (storeResult.success ? 'Pattern stored with vector embedding for semantic search' : (storeResult.error || 'Store function unavailable')),
+        : controller === 'bridge-fallback'
+          ? 'Pattern stored via bridge with embedding and HNSW indexing'
+          : (storeResult.success ? 'Pattern stored with vector embedding for semantic search' : (storeResult.error || 'Store function unavailable')),
     };
   },
 };
@@ -2725,8 +2745,18 @@ export const hooksIntelligenceStats: MCPTool = {
     const flash = await getFlashAttention();
     const lora = await getLoRAAdapter();
 
-    // Fallback to memory store for legacy data
-    const memoryStats = getIntelligenceStatsFromMemory();
+    // Fallback to memory store for legacy data (may not exist yet)
+    let memoryStats: ReturnType<typeof getIntelligenceStatsFromMemory>;
+    try {
+      memoryStats = getIntelligenceStatsFromMemory();
+    } catch {
+      memoryStats = {
+        trajectories: { total: 0, successful: 0 },
+        patterns: { learned: 0, categories: {} },
+        memory: { indexSize: 0, totalAccessCount: 0, memorySizeBytes: 0 },
+        routing: { decisions: 0, avgConfidence: 0 },
+      };
+    }
 
     // SONA stats from real implementation
     let sonaStats = {
@@ -3502,26 +3532,7 @@ export const hooksWorkerDispatch: MCPTool = {
 
     activeWorkers.set(workerId, worker);
 
-    // Update worker progress in background
-    if (background) {
-      setTimeout(() => {
-        const w = activeWorkers.get(workerId);
-        if (w) {
-          w.progress = 50;
-          w.phase = 'processing';
-        }
-      }, 500);
-
-      setTimeout(() => {
-        const w = activeWorkers.get(workerId);
-        if (w) {
-          w.progress = 100;
-          w.phase = 'completed';
-          w.status = 'completed';
-          w.completedAt = new Date();
-        }
-      }, 1500);
-    } else {
+    if (!background) {
       worker.progress = 100;
       worker.phase = 'completed';
       worker.status = 'completed';
@@ -3539,8 +3550,9 @@ export const hooksWorkerDispatch: MCPTool = {
         estimatedDuration: config.estimatedDuration,
         capabilities: config.capabilities,
       },
-      status: background ? 'dispatched' : 'completed',
+      status: background ? 'scheduled' : 'completed',
       background,
+      note: background ? 'Worker scheduled. Use hooks_worker-status to check progress. Start the daemon (daemon start) for real background execution.' : undefined,
       timestamp: new Date().toISOString(),
     };
   },

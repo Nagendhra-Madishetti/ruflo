@@ -11,6 +11,8 @@
 const SHELL_META = /[;&|`$(){}[\]<>!#\\]/;
 const PATH_TRAVERSAL = /\.\.[/\\]/;
 const IDENTIFIER_RE = /^[a-zA-Z0-9_][a-zA-Z0-9_\-.:]{0,127}$/;
+const GIT_REF_RE = /^[a-zA-Z0-9_][a-zA-Z0-9_\-.:~^/]{0,255}$/;
+const NPM_PACKAGE_RE = /^(@[a-zA-Z0-9_\-]+\/)?[a-zA-Z0-9_\-][a-zA-Z0-9_\-.]{0,213}$/;
 
 export interface ValidationResult {
   valid: boolean;
@@ -37,6 +39,45 @@ export function validateIdentifier(value: unknown, label: string): ValidationRes
   }
   if (!IDENTIFIER_RE.test(value)) {
     return { valid: false, sanitized: '', error: `${label} contains invalid characters (allowed: alphanumeric, _, -, ., :)` };
+  }
+  return { valid: true, sanitized: value };
+}
+
+/**
+ * Validate a git ref (HEAD~1, main..feature, commit hashes, etc.).
+ * Allows ~, ^, and / which are standard git revision selectors.
+ */
+export function validateGitRef(value: unknown, label: string): ValidationResult {
+  if (typeof value !== 'string' || value.length === 0) {
+    return { valid: false, sanitized: '', error: `${label} must be a non-empty string` };
+  }
+  if (value.length > 256) {
+    return { valid: false, sanitized: '', error: `${label} exceeds 256 characters` };
+  }
+  if (SHELL_META.test(value)) {
+    return { valid: false, sanitized: '', error: `${label} contains disallowed characters` };
+  }
+  if (!GIT_REF_RE.test(value)) {
+    return { valid: false, sanitized: '', error: `${label} contains invalid characters (allowed: alphanumeric, _, -, ., :, ~, ^, /)` };
+  }
+  return { valid: true, sanitized: value };
+}
+
+/**
+ * Validate an npm package name (allows @scope/name format).
+ */
+export function validatePackageName(value: unknown, label: string): ValidationResult {
+  if (typeof value !== 'string' || value.length === 0) {
+    return { valid: false, sanitized: '', error: `${label} must be a non-empty string` };
+  }
+  if (value.length > 214) {
+    return { valid: false, sanitized: '', error: `${label} exceeds 214 characters` };
+  }
+  if (SHELL_META.test(value)) {
+    return { valid: false, sanitized: '', error: `${label} contains disallowed characters` };
+  }
+  if (!NPM_PACKAGE_RE.test(value)) {
+    return { valid: false, sanitized: '', error: `${label} contains invalid characters (expected npm package name, e.g. @scope/name)` };
   }
   return { valid: true, sanitized: value };
 }

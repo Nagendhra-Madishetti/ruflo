@@ -876,4 +876,80 @@ export const embeddingsTools: MCPTool[] = [
       };
     },
   },
+
+  // --- RaBitQ 1-bit quantized vector index ---
+
+  {
+    name: 'embeddings_rabitq_build',
+    description: 'Build RaBitQ 1-bit quantized index from stored embeddings (32× compression). Pre-filters candidates via Hamming scan before exact rerank.',
+    category: 'embeddings',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        force: { type: 'boolean', description: 'Force rebuild even if index exists' },
+      },
+    },
+    handler: async (params: Record<string, unknown>) => {
+      const { buildRabitqIndex } = await import('../memory/rabitq-index.js');
+      return buildRabitqIndex({ force: params.force as boolean });
+    },
+  },
+
+  {
+    name: 'embeddings_rabitq_search',
+    description: 'Search via RaBitQ quantized index (fast Hamming scan). Returns candidate IDs for reranking.',
+    category: 'embeddings',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query text' },
+        k: { type: 'number', description: 'Number of results (default: 10)' },
+        namespace: { type: 'string', description: 'Filter by namespace' },
+      },
+      required: ['query'],
+    },
+    handler: async (params: Record<string, unknown>) => {
+      const { validateText: vt } = await import('./validate-input.js');
+      const v = vt(params.query as string, 'query');
+      if (!v.valid) return { success: false, error: v.error };
+
+      const { searchRabitq } = await import('../memory/rabitq-index.js');
+      const { generateEmbedding } = await import('../memory/memory-initializer.js');
+
+      const queryEmb = await generateEmbedding(params.query as string);
+      const results = await searchRabitq(queryEmb.embedding, {
+        k: (params.k as number) || 10,
+        namespace: params.namespace as string,
+      });
+
+      if (!results) {
+        return { success: false, error: 'RaBitQ index not built. Call embeddings_rabitq_build first.' };
+      }
+
+      return {
+        success: true,
+        results: results.map(r => ({
+          id: r.id.substring(0, 12),
+          key: r.key,
+          namespace: r.namespace,
+          distance: Math.round(r.distance * 10000) / 10000,
+        })),
+        count: results.length,
+      };
+    },
+  },
+
+  {
+    name: 'embeddings_rabitq_status',
+    description: 'Get RaBitQ quantized index status — availability, vector count, compression ratio',
+    category: 'embeddings',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+    handler: async () => {
+      const { getRabitqStatus } = await import('../memory/rabitq-index.js');
+      return { success: true, ...getRabitqStatus() };
+    },
+  },
 ];

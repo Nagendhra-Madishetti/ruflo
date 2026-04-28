@@ -22,9 +22,16 @@ function getPackageVersion(): string {
   try {
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = dirname(__filename);
-    const pkgPath = join(__dirname, '..', '..', 'package.json');
-    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
-    return pkg.version || '3.0.0';
+    for (const depth of ['../..', '../../..']) {
+      const pkgPath = join(__dirname, depth, 'package.json');
+      if (existsSync(pkgPath)) {
+        const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+        if (pkg.name?.includes('claude-flow') || pkg.name === 'ruflo') {
+          return pkg.version || '3.0.0';
+        }
+      }
+    }
+    return '3.0.0';
   } catch {
     return '3.0.0';
   }
@@ -306,11 +313,13 @@ export const systemTools: MCPTool[] = [
       const checks: Array<{ name: string; status: string; latency?: number; message?: string }> = [];
       const projectCwd = getProjectCwd();
 
-      // Memory DB check — verify the store file exists
+      // Memory DB check — verify any supported store file exists
       {
         const t0 = performance.now();
-        const memoryDbPath = join(projectCwd, '.claude-flow', 'memory', 'store.json');
-        const memoryExists = existsSync(memoryDbPath);
+        const legacyPath = join(projectCwd, '.claude-flow', 'memory', 'store.json');
+        const agentDbPath = join(projectCwd, '.claude-flow', 'memory', 'agentdb.sqlite');
+        const rvfPath = join(projectCwd, '.claude-flow', 'memory', 'store.rvf');
+        const memoryExists = existsSync(legacyPath) || existsSync(agentDbPath) || existsSync(rvfPath);
         const elapsed = performance.now() - t0;
         checks.push({
           name: 'memory',

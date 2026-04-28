@@ -2043,7 +2043,19 @@ export async function storeEntry(options: {
   const bridge = await getBridge();
   if (bridge) {
     const bridgeResult = await bridge.bridgeStoreEntry(options);
-    if (bridgeResult) return bridgeResult;
+    if (bridgeResult) {
+      // Keep HNSW index in sync with bridge-stored entries
+      if (bridgeResult.rawEmbedding && bridgeResult.success) {
+        const ns = options.namespace || 'default';
+        await addToHNSWIndex(bridgeResult.id, bridgeResult.rawEmbedding, {
+          id: bridgeResult.id,
+          key: options.key,
+          namespace: ns,
+          content: options.value,
+        }).catch(() => {});
+      }
+      return bridgeResult;
+    }
   }
 
   // Fallback: raw sql.js
@@ -2203,7 +2215,52 @@ export async function searchEntries(options: {
     const queryEmb = await generateEmbedding(query);
     const queryEmbedding = queryEmb.embedding;
 
-    // Try HNSW search first (150x faster)
+    // Try RaBitQ pre-filter first (32× compressed Hamming scan)
+    try {
+      const { searchRabitq } = await import('./rabitq-index.js');
+      const rabitqCandidates = await searchRabitq(queryEmbedding, { k: limit * 2, namespace: effectiveNamespace });
+      if (rabitqCandidates && rabitqCandidates.length > 0) {
+        // Rerank candidates with exact cosine similarity from SQLite
+        const initSqlJs = (await import('sql.js')).default;
+        const SQL = await initSqlJs();
+        const fileBuffer = fs.readFileSync(dbPath);
+        const db = new SQL.Database(fileBuffer);
+        const reranked: { id: string; key: string; content: string; score: number; namespace: string }[] = [];
+
+        for (const candidate of rabitqCandidates) {
+          const stmt = db.prepare('SELECT content, embedding FROM memory_entries WHERE id = ? AND status = ?');
+          stmt.bind([candidate.id, 'active']);
+          if (stmt.step()) {
+            const [content, embeddingJson] = stmt.get() as [string, string | null];
+            let score = 0;
+            if (embeddingJson) {
+              try {
+                const embedding = JSON.parse(embeddingJson) as number[];
+                score = cosineSim(queryEmbedding, embedding);
+              } catch { /* skip */ }
+            }
+            if (score >= threshold) {
+              reranked.push({
+                id: candidate.id.substring(0, 12),
+                key: candidate.key || candidate.id.substring(0, 15),
+                content: (content || '').substring(0, 60) + ((content || '').length > 60 ? '...' : ''),
+                score,
+                namespace: candidate.namespace,
+              });
+            }
+          }
+          stmt.free();
+        }
+        db.close();
+
+        if (reranked.length > 0) {
+          reranked.sort((a, b) => b.score - a.score);
+          return { success: true, results: reranked.slice(0, limit), searchTime: Date.now() - startTime };
+        }
+      }
+    } catch { /* RaBitQ unavailable, fall through */ }
+
+    // Try HNSW search (150x faster than brute-force)
     const hnswResults = await searchHNSWIndex(queryEmbedding, { k: limit, namespace: effectiveNamespace });
     if (hnswResults && hnswResults.length > 0) {
       // Filter by threshold

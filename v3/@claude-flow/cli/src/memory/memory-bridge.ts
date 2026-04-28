@@ -83,13 +83,15 @@ async function getRegistry(dbPath?: string): Promise<any | null> {
             dbPath: dbPath || getDbPath(),
             embeddingModel: 'Xenova/all-MiniLM-L6-v2',
             dimension: 384,
+            vectorBackend: 'auto',
             controllers: {
               reasoningBank: true,
               learningBridge: false,
               tieredCache: true,
               hierarchicalMemory: true,
               memoryConsolidation: true,
-              memoryGraph: true, // issue #1214: enable MemoryGraph for graph-aware ranking
+              memoryGraph: true,
+              vectorBackend: true,
             },
           });
         } finally {
@@ -363,6 +365,7 @@ export async function bridgeStoreEntry(options: {
   success: boolean;
   id: string;
   embedding?: { dimensions: number; model: string };
+  rawEmbedding?: number[];
   guarded?: boolean;
   cached?: boolean;
   attested?: boolean;
@@ -442,6 +445,7 @@ export async function bridgeStoreEntry(options: {
       success: true,
       id,
       embedding: embeddingJson ? { dimensions, model } : undefined,
+      rawEmbedding: embeddingJson ? JSON.parse(embeddingJson) as number[] : undefined,
       guarded: true,
       cached: true,
       attested: true,
@@ -546,10 +550,11 @@ export async function bridgeSearchEntries(options: {
       }
 
       // Reciprocal rank fusion: combine semantic and BM25
-      // Weight: 0.7 semantic + 0.3 BM25 (semantic preferred when embeddings available)
-      const score = queryEmbedding
+      // Weight: 0.7 semantic + 0.3 BM25 when both embeddings present
+      // Fall back to BM25-only when either query or row lacks an embedding
+      const score = semanticScore > 0
         ? (0.7 * semanticScore + 0.3 * bm25ScoreVal)
-        : bm25ScoreVal;  // BM25-only when no embeddings
+        : bm25ScoreVal;
 
       if (score >= threshold) {
         // Phase 4: ExplainableRecall provenance
@@ -1187,16 +1192,32 @@ export async function bridgeStorePattern(options: {
     }
 
     // Fallback: store via bridge SQL
+    const patternValue = JSON.stringify({ pattern: options.pattern, type: options.type, confidence: options.confidence, metadata: options.metadata });
     const result = await bridgeStoreEntry({
       key: patternId,
-      value: JSON.stringify({ pattern: options.pattern, type: options.type, confidence: options.confidence, metadata: options.metadata }),
+      value: patternValue,
       namespace: 'pattern',
       generateEmbeddingFlag: true,
       tags: [options.type, 'reasoning-pattern'],
       dbPath: options.dbPath,
     });
 
-    return result ? { success: true, patternId: result.id, controller: 'bridge-fallback' } : null;
+    if (!result) return null;
+
+    // Add to HNSW index for fast semantic search (bridgeStoreEntry stores SQL only)
+    if (result.rawEmbedding) {
+      try {
+        const { addToHNSWIndex } = await import('./memory-initializer.js');
+        await addToHNSWIndex(result.id, result.rawEmbedding, {
+          id: result.id,
+          key: patternId,
+          namespace: 'pattern',
+          content: patternValue,
+        });
+      } catch { /* HNSW is best-effort */ }
+    }
+
+    return { success: true, patternId: result.id, controller: 'bridge-fallback' };
   } catch {
     return null;
   }
@@ -1715,12 +1736,21 @@ export async function bridgeBatchOperation(params: { operation: string; entries:
     let result;
     switch (params.operation) {
       case 'insert': {
-        // insertEpisodes expects [{content, metadata?, embedding?}]
+        if (typeof batch.insertEpisodes !== 'function') {
+          return { success: false, error: 'BatchOperations.insertEpisodes not available — embedder may not be initialized. Use memory_store instead.' };
+        }
         const episodes = params.entries.map((e: any) => ({
           content: e.value || e.content || JSON.stringify(e),
           metadata: e.metadata || { key: e.key },
         }));
-        result = await batch.insertEpisodes(episodes);
+        try {
+          result = await batch.insertEpisodes(episodes);
+        } catch (insertErr: any) {
+          if (insertErr?.message?.includes('null') || insertErr?.message?.includes('embedBatch')) {
+            return { success: false, error: 'Embedder not initialized for batch insert. Use memory_store for individual entries or run embeddings_init first.' };
+          }
+          throw insertErr;
+        }
         break;
       }
       case 'delete': {

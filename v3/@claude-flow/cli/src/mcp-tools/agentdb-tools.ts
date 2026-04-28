@@ -473,7 +473,7 @@ export const agentdbConsolidate: MCPTool = {
 
 export const agentdbBatch: MCPTool = {
   name: 'agentdb_batch',
-  description: 'Batch operations on memory entries (insert, update, delete)',
+  description: 'Batch operations on AgentDB episodes (insert, update, delete). Note: entries are stored in the AgentDB episodes table, not the memory_search namespace. Use memory_store for entries that should be searchable via memory_search.',
   inputSchema: {
     type: 'object',
     properties: {

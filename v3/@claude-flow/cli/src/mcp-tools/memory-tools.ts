@@ -346,8 +346,8 @@ export const memoryTools: MCPTool[] = [
 
       const query = input.query as string;
       const namespace = (input.namespace as string) || 'default';
-      const limit = (input.limit as number) || 10;
-      const threshold = (input.threshold as number) || 0.3;
+      const limit = (input.limit as number) ?? 10;
+      const threshold = (input.threshold as number) ?? 0.3;
 
       validateMemoryInput(undefined, undefined, query);
 
@@ -775,7 +775,7 @@ export const memoryTools: MCPTool[] = [
       validateMemoryInput(undefined, undefined, input.query as string);
 
       const query = input.query as string;
-      const limit = (input.limit as number) || 10;
+      const limit = (input.limit as number) ?? 10;
       const ns = input.namespace as string | undefined;
 
       if (ns) { const vNs = validateIdentifier(ns, 'namespace'); if (!vNs.valid) return { success: false, query, results: [], total: 0, error: vNs.error }; }

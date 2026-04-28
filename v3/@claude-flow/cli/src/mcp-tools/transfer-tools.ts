@@ -7,7 +7,7 @@
  */
 
 import type { MCPTool, MCPToolResult } from './types.js';
-import { validateIdentifier, validateText } from './validate-input.js';
+import { validateIdentifier, validatePackageName, validateText } from './validate-input.js';
 
 /**
  * Helper to create MCP tool result
@@ -335,7 +335,7 @@ export const transferTools: MCPTool[] = [
       required: ['name'],
     },
     handler: async (input): Promise<MCPToolResult> => {
-      { const v = validateIdentifier((input as { name: string }).name, 'name'); if (!v.valid) return createResult({ error: v.error }, true); }
+      { const v = validatePackageName((input as { name: string }).name, 'name'); if (!v.valid) return createResult({ error: v.error }, true); }
       try {
         const { createPluginDiscoveryService } = await import('../plugins/store/index.js');
         const discovery = createPluginDiscoveryService();
