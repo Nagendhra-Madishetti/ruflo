@@ -1,0 +1,60 @@
+steps:
+  # Build the WASM-integrated ruvocal image from source
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'build',
+      '-t', 'gcr.io/${PROJECT_ID}/ruvocal:${_VERSION}',
+      '-f', 'Dockerfile',
+      '.'
+    ]
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/${PROJECT_ID}/ruvocal:${_VERSION}']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'tag',
+      'gcr.io/${PROJECT_ID}/ruvocal:${_VERSION}',
+      'gcr.io/${PROJECT_ID}/ruvocal:latest'
+    ]
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/${PROJECT_ID}/ruvocal:latest']
+
+  # Deploy to Cloud Run
+  #
+  # Pre-requisites (operator must complete before first deploy):
+  #   1. MongoDB endpoint reachable from Cloud Run (Atlas free tier or
+  #      a sidecar container). Set MONGODB_URL via Secret Manager:
+  #      `gcloud secrets create ruvocal-mongodb-url --data-file=-`
+  #   2. AI provider keys present in Secret Manager (per ADR-029):
+  #      `openai-api-key`, `google-api-key`, `openrouter-api-key`
+  #   3. Optional: custom domain mapping (`gcloud beta run domain-mappings`)
+  #
+  # See ADR-033 for the deployment plan and ADR-029 for the established
+  # secret-management pattern.
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args: [
+      'run', 'deploy', 'ruvocal',
+      '--image', 'gcr.io/${PROJECT_ID}/ruvocal:${_VERSION}',
+      '--platform', 'managed',
+      '--region', 'us-central1',
+      '--port', '3000',
+      '--memory', '2Gi',
+      '--cpu', '2',
+      '--min-instances', '0',
+      '--max-instances', '5',
+      '--timeout', '300',
+      '--allow-unauthenticated',
+      '--set-env-vars', 'NODE_ENV=production,BODY_SIZE_LIMIT=15728640',
+      # Secret names match those present in ruv-dev Secret Manager.
+      # MONGODB_URL must be provisioned first (see ADR-033 deployment notes).
+      '--set-secrets', 'ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest,GOOGLE_API_KEY=GOOGLE_AI_API_KEY:latest,OPENROUTER_API_KEY=OPENROUTER_API_KEY:latest,MONGODB_URL=ruvocal-mongodb-url:latest'
+    ]
+
+substitutions:
+  _VERSION: 'v1'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+timeout: 1800s

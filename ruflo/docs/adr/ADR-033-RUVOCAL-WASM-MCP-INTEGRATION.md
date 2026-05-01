@@ -94,8 +94,31 @@ Acceptance criteria for merging the branch:
 - [ ] `ruflo-browser` smoke test: load the home page, open the gallery panel, send a message through a non-WASM model, confirm no console errors.
 - [ ] Local-only files still present after overlay: `mcp-bridge/index.js`, `routes/api/v2/debug/`, `stub/@reflink/reflink/index.js`, `.env`, `package-lock.json`.
 
+## Deployment
+
+Cloud Run deployment is **out of scope for this PR** but the path is staged in `ruflo/src/ruvocal/cloudbuild.yaml`. Two infrastructure prerequisites must be satisfied before the first deploy:
+
+1. **MongoDB endpoint** — HF chat-ui requires a Mongo server. Cloud Run cannot run Mongo natively. Two options:
+   - **MongoDB Atlas free tier** (M0): create a cluster, get the connection string, store as Secret Manager secret `ruvocal-mongodb-url`.
+   - **Cloud Run multi-container** (sidecar): deploy a `mongo:8` sidecar in the same revision; main container connects to `localhost:27017`. Requires `--container` flags on `gcloud run deploy`.
+2. **AI provider secrets** — already exist in `ruv-dev` Secret Manager per ADR-029: `openai-api-key`, `google-api-key`, `openrouter-api-key`.
+
+Once both are in place:
+
+```bash
+cd ruflo/src/ruvocal
+gcloud builds submit --config=cloudbuild.yaml --project=ruv-dev --region=us-central1
+```
+
+Validation after deploy: `npx agent-browser open <run-url>` then check console for `[WASM MCP] Server initialized successfully · 18 tools`.
+
+The thin `ruflo/src/chat-ui/Dockerfile` wrapper (FROM `ghcr.io/huggingface/chat-ui-db:latest`) is **unsuitable** for deploying this integration — it can only patch the upstream HF base image with a few static files; it cannot include compiled WASM source. The full ruvocal Dockerfile build is required.
+
 ## References
 
 - Upstream source: `https://github.com/ruvnet/ruvector` → `ui/ruvocal/`
 - Local target: `ruflo/src/ruvocal/`
 - Branch: `feat/ruvocal-wasm-mcp-integration`
+- PR: https://github.com/ruvnet/ruflo/pull/1687
+- Cloud Build config: `ruflo/src/ruvocal/cloudbuild.yaml`
+- Related deployment ADR: ADR-029 (HF Chat UI on Cloud Run)
