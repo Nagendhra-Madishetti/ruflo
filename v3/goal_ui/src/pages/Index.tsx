@@ -40,6 +40,8 @@ import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 import { RVF_ENABLED } from "@/lib/featureFlags";
 import { getWidgetConfig, saveWidgetConfig } from "@/integrations/rvf/widgetConfigRepo";
+import { getCurrentGoal, saveCurrentGoal } from "@/integrations/rvf/goalRepo";
+import { getResearchConfig, saveResearchConfig } from "@/integrations/rvf/researchConfigRepo";
 
 interface WidgetConfig {
   primaryColor: string;
@@ -194,6 +196,43 @@ const Index = () => {
   const [researchConfig, setResearchConfig] = useState<ResearchConfig>(defaultResearchConfig);
   const [currentGOAPState, setCurrentGOAPState] = useState<Record<string, boolean | string | number>>(defaultResearchConfig.stateDefinition.currentState);
   const [showGOAPCards, setShowGOAPCards] = useState(false);
+
+  // RVF persistence for userGoal + researchConfig (Step 18 — extends
+  // Step 11's widgetConfig pattern). Behind VITE_RVF_ENABLED.
+  // Each slot has its own hydrated-gate so a slow IndexedDB read on
+  // one doesn't block the others' persist effects.
+  const [goalHydrated, setGoalHydrated] = useState<boolean>(!RVF_ENABLED);
+  const [researchConfigHydrated, setResearchConfigHydrated] = useState<boolean>(!RVF_ENABLED);
+  useEffect(() => {
+    if (!RVF_ENABLED) return;
+    let cancelled = false;
+    getCurrentGoal()
+      .then((stored) => {
+        if (!cancelled && stored) setUserGoal(stored);
+      })
+      .catch((err) => console.warn("RVF goal hydrate failed:", err))
+      .finally(() => { if (!cancelled) setGoalHydrated(true); });
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    if (!RVF_ENABLED || !goalHydrated) return;
+    saveCurrentGoal(userGoal).catch((err) => console.warn("RVF goal save failed:", err));
+  }, [userGoal, goalHydrated]);
+  useEffect(() => {
+    if (!RVF_ENABLED) return;
+    let cancelled = false;
+    getResearchConfig<ResearchConfig>()
+      .then((stored) => {
+        if (!cancelled && stored) setResearchConfig(stored);
+      })
+      .catch((err) => console.warn("RVF researchConfig hydrate failed:", err))
+      .finally(() => { if (!cancelled) setResearchConfigHydrated(true); });
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    if (!RVF_ENABLED || !researchConfigHydrated) return;
+    saveResearchConfig(researchConfig).catch((err) => console.warn("RVF researchConfig save failed:", err));
+  }, [researchConfig, researchConfigHydrated]);
   const activeStepRef = useRef<HTMLDivElement>(null);
   const goapCardsRef = useRef<HTMLDivElement>(null);
   const objectiveRef = useRef<HTMLDivElement>(null);
