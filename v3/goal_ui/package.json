@@ -22,6 +22,7 @@
     "functions:deploy": "echo 'gcloud functions deploy <name> — wire in Step 22d / Step 24' && exit 1",
     "check:secrets": "bash scripts/check-secrets.sh",
     "check:handler-fallback": "tsx scripts/check-handler-fallback.mjs",
+    "check:rvf-format": "tsx scripts/check-rvf-format.mjs",
     "check:audit": "npm audit --omit=dev --audit-level=critical",
     "check:audit:high": "npm audit --omit=dev --audit-level=high || echo '(non-blocking; see audit-known-issues.md)'",
     "postbuild": "bash scripts/check-secrets.sh"

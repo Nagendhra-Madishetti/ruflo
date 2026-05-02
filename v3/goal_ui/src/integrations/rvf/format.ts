@@ -19,6 +19,11 @@ export const VERSION = 1;
 /** Default vector dimensionality. MiniLM-L6 default; 1536 in Node default. */
 export const DEFAULT_DIMENSIONS = 384;
 
+/** Step 22e hardening — refuse to load entries larger than this. */
+export const MAX_ENTRY_SIZE_BYTES = 256 * 1024;
+/** Hard upper bound on dimensions; matches Node side's 1..10000 sanity. */
+export const MAX_DIMENSIONS = 10_000;
+
 export type Metric = 'cosine' | 'euclidean' | 'dot';
 export type Quantization = 'fp32' | 'fp16' | 'int8';
 
@@ -113,18 +118,54 @@ export function decodeRvf(buf: Uint8Array): RvfFile {
   let offset = 4;
   const headerLen = readU32LE(buf, offset);
   offset += 4;
+  if (headerLen === 0) throw new Error('RVF: header length is zero');
   if (headerLen > 1024 * 1024) throw new Error('RVF: header length implausible');
+  if (offset + headerLen > buf.length) {
+    throw new Error('RVF: header truncated (declared length exceeds buffer)');
+  }
   const header = JSON.parse(dec.decode(buf.subarray(offset, offset + headerLen))) as RvfHeader;
   offset += headerLen;
 
   if (header.version > VERSION) {
     throw new Error(`RVF: version ${header.version} not supported (max ${VERSION})`);
   }
+  if (
+    !Number.isInteger(header.dimensions) ||
+    header.dimensions < 1 ||
+    header.dimensions > MAX_DIMENSIONS
+  ) {
+    throw new Error(`RVF: invalid header.dimensions ${header.dimensions} (must be 1..${MAX_DIMENSIONS})`);
+  }
 
+  if (offset + 4 > buf.length) throw new Error('RVF: missing entries-length prefix');
   const entriesLen = readU32LE(buf, offset);
   offset += 4;
+  if (offset + entriesLen > buf.length) {
+    throw new Error('RVF: entries section truncated (declared length exceeds buffer)');
+  }
   const rawEntries = JSON.parse(dec.decode(buf.subarray(offset, offset + entriesLen))) as Array<ReturnType<typeof serializeEntry>>;
-  const entries = rawEntries.map(deserializeEntry);
+  if (!Array.isArray(rawEntries)) {
+    throw new Error('RVF: entries section did not parse as an array');
+  }
+
+  const entries = rawEntries.map((raw, i) => {
+    // Step 22e — per-entry size cap (defends against IndexedDB
+    // quota exhaustion via a malicious export).
+    const serialized = JSON.stringify(raw);
+    if (serialized.length > MAX_ENTRY_SIZE_BYTES) {
+      throw new Error(
+        `RVF: entry ${i} exceeds MAX_ENTRY_SIZE_BYTES (${serialized.length} > ${MAX_ENTRY_SIZE_BYTES})`,
+      );
+    }
+    const entry = deserializeEntry(raw);
+    // Step 22e — vector dim must match header.dimensions when present
+    if (entry.vector && entry.vector.length !== header.dimensions) {
+      throw new Error(
+        `RVF: entry ${i} vector length ${entry.vector.length} does not match header.dimensions ${header.dimensions}`,
+      );
+    }
+    return entry;
+  });
 
   return { header, entries };
 }
