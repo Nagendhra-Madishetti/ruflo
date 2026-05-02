@@ -11,6 +11,7 @@
 import { z } from 'zod';
 import { wrapUserInput, UserPromptInputSchema } from '../_lib/sanitize';
 import { callLlmWithTool, isLlmAvailable } from '../_lib/llm';
+import { runResearchSwarm } from '../_lib/swarm';
 
 interface ResearchDataItem {
   title: string;
@@ -105,12 +106,38 @@ export async function researchStepHandler(
     };
   }
 
-  // Prior step content is LLM-generated → wrap as untrusted to defeat
-  // injection that would otherwise round-trip into the next prompt.
+  // Build prior-context once — both paths consume it.
   const ctx = (req.previousStepsData ?? []).map(s =>
     `${wrapUserInput(s.stepTitle)}:\n` + s.data.map(d => `- ${wrapUserInput(d.title)}: ${wrapUserInput(d.content)}`).join('\n')
   ).join('\n\n');
 
+  // R-3.2: env-gated swarm path. When `RUFLO_USE_SWARM=true`, dispatch
+  // to the 4-agent specialized pipeline (researcher → analyst → critic
+  // → scribe). Default = single-call path (cheaper, faster, what the
+  // current production goal.ruv.io behaviour is).
+  if (process.env.RUFLO_USE_SWARM === 'true') {
+    const swarm = await runResearchSwarm({
+      goal,
+      stepTitle,
+      stepDescription,
+      priorContext: ctx || undefined,
+    });
+    if (swarm.status !== 200) {
+      return { status: swarm.status, body: { error: `swarm failed at ${swarm.failedAgent}: ${swarm.error}` } };
+    }
+    // Map SwarmFinding → ResearchDataItem (drop critique; add timestamp).
+    const now = new Date().toISOString();
+    const items: ResearchDataItem[] = swarm.findings.map((f) => ({
+      title: f.title,
+      content: f.content,
+      source: f.source,
+      confidence: f.confidence,
+      timestamp: now,
+    }));
+    return { status: 200, body: items };
+  }
+
+  // Default single-call path.
   const userPrompt = [
     `Research goal: ${wrapUserInput(goal)}`,
     `Current step: ${wrapUserInput(stepTitle)} — ${wrapUserInput(stepDescription)}`,
