@@ -148,6 +148,89 @@ console.log('\n[C] runResearchSwarm — synthetic contested claim through full p
   check('consensusVerdict has dissentRationale', !!result.findings?.[0]?.consensusVerdict?.dissentRationale);
 }
 
+// ── [D] R-6.2: 5 simulated runs, rotating faulty voter ─────────
+// DoD: 5 simulated runs all reach consensus within 3 rounds.
+// Our consensus model is single-round majority — "rounds" maps to
+// "how many voter-batches were dispatched". The current impl dispatches
+// once and tallies, so rounds=1 trivially ≤ 3.
+process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
+_resetSecretsCacheForTesting();
+console.log('\n[D] 5 simulated runs, rotating faulty voter (R-6.2 DoD)');
+{
+  const VOTERS = ['evidence-weighter', 'skeptic', 'source-quality', 'confidence-calibrator', 'pragmatist'];
+  const SEEDS = [
+    { claim: 'Tesla Model Y top family-EV pick',           evidence: 'EVIA 2024 sales rank',     analyst: 0.9, critic: 0.5 },
+    { claim: 'IONIQ 5 best in interior space',             evidence: 'Edmunds review',           analyst: 0.8, critic: 0.4 },
+    { claim: 'Federal tax credit covers $7.5k for EVs',    evidence: 'IRS.gov clean-vehicle',    analyst: 0.95, critic: 0.6 },
+    { claim: 'Charging infrastructure improving in US',    evidence: 'Bloomberg report',         analyst: 0.7, critic: 0.3 },
+    { claim: 'Battery degradation lower than ICE wear',    evidence: 'Recurrent study 2024',     analyst: 0.85, critic: 0.55 },
+  ];
+
+  const runs = [];
+  for (let i = 0; i < 5; i++) {
+    const faultyVoter = VOTERS[i];
+    const seed = SEEDS[i];
+
+    // Stub fetch: count voter calls (= round count × voter count).
+    let callCount = 0;
+    global.fetch = async (_url, opts) => {
+      callCount++;
+      const body = JSON.parse(opts.body);
+      const sys = body.system ?? '';
+      let vote = 'keep';
+      let rationale = `kept on solid evidence (run ${i})`;
+      if (new RegExp(`voter "${faultyVoter}"`).test(sys)) {
+        vote = 'drop';
+        rationale = `[forced-faulty voter "${faultyVoter}"] always drops`;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          content: [{ type: 'tool_use', name: 'cast_vote', input: { vote, rationale } }],
+          stop_reason: 'tool_use',
+        }),
+        text: async () => '',
+      };
+    };
+
+    const { runConsensusVote } = await import('../functions/_lib/consensus.ts?v=' + Date.now() + '-' + i);
+    const t0 = performance.now();
+    const v = await runConsensusVote({
+      claim: seed.claim,
+      evidence: seed.evidence,
+      analystConfidence: seed.analyst,
+      criticConfidence: seed.critic,
+    });
+    const t1 = performance.now();
+    // 1 round = 5 voter calls in parallel. Round count = callCount / 5.
+    const rounds = Math.ceil(callCount / 5);
+    runs.push({
+      i,
+      faulty: faultyVoter,
+      decision: v.decision,
+      rounds,
+      latencyMs: Math.round(t1 - t0),
+      keepCount: v.votes.filter((x) => x.vote === 'keep').length,
+      dropCount: v.votes.filter((x) => x.vote === 'drop').length,
+    });
+  }
+
+  console.log('  Per-run results:');
+  for (const r of runs) {
+    console.log(`    run ${r.i} (faulty=${r.faulty}): ${r.decision} ${r.keepCount}-${r.dropCount} in ${r.rounds} round(s), ${r.latencyMs}ms`);
+  }
+
+  check(`5 runs executed`, runs.length === 5);
+  check(`all 5 runs decided 'keep' (4 keeps each, 1 forced-faulty drop)`,
+    runs.every((r) => r.decision === 'keep' && r.keepCount === 4 && r.dropCount === 1));
+  check(`all 5 runs reached consensus in ≤ 3 rounds`,
+    runs.every((r) => r.rounds <= 3));
+  check(`max rounds across all runs`, Math.max(...runs.map((r) => r.rounds)) <= 3);
+  check(`every voter has been the faulty one (rotation)`,
+    new Set(runs.map((r) => r.faulty)).size === 5);
+}
+
 global.fetch = ORIG_FETCH;
 console.log(`\nPassed: ${pass}  Failed: ${fail}`);
 process.exit(fail);
